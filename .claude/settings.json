@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(mkdir -p \"C:\\\\Users\\\\janst\\\\.claude\\\\projects\\\\c--Dropbox-Projects-Airsoft-2026---Data-Run\\\\memory\")",
-      "Bash(Remove-Item -Recurse -Force \"c:\\\\Dropbox\\\\Projects\\\\Airsoft\\\\2026 - Data Run\\\\card_init\")"
+      "Bash(Remove-Item -Recurse -Force \"c:\\\\Dropbox\\\\Projects\\\\Airsoft\\\\2026 - Data Run\\\\card_init\")",
+      "Read(//c/Dropbox/Projects/Airsoft/**)"
     ],
     "additionalDirectories": [
       "C:\\Users\\janst\\.claude\\projects\\c--Dropbox-Projects-Airsoft-2026---Data-Run\\memory"
