@@ -159,8 +159,9 @@ MFRC522                rfid{rfidDriver};
 MFRC522::MIFARE_Key    key;
 Adafruit_NeoPixel      strip(NEO_COUNT, NEO_PIN, NEO_GRB + NEO_KHZ800);
 
-uint8_t score    = 0;
-bool    gameOver = false;
+uint8_t  score      = 0;
+bool     gameOver   = false;
+uint32_t lastStatus = 0;
 
 // ── Pixel helpers ─────────────────────────────────────────────────────────────
 void allPixels(uint8_t r, uint8_t g, uint8_t b) {
@@ -232,6 +233,18 @@ uint32_t uploadStart = 0;
 uint32_t lastCheck   = 0;
 uint32_t lastBeep    = 0;
 
+// Emit structured status line for the RPi display.
+// Format: ##STATE <state> <elapsed_ms> <duration_ms> <score> <winscore>
+void emitStatus(uint32_t elapsed = 0) {
+  const char* s = gameOver              ? "GAMEOVER"  :
+                  state == UPLOADING    ? "UPLOADING"  :
+                  state == CARD_PRESENT ? "READY"      : "IDLE";
+  Serial.printf("##STATE %s %u %u %u %u\n",
+                s, elapsed, (unsigned)cfg.uploadDurationMs,
+                (unsigned)score, (unsigned)cfg.winScore);
+  lastStatus = millis();
+}
+
 // Halt card and return to IDLE, restoring the score display.
 void toIdle() {
   rfid.PICC_HaltA();
@@ -285,9 +298,15 @@ void setup() {
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
 void loop() {
-  if (gameOver) return;
+  if (gameOver) {
+    if (millis() - lastStatus >= 5000) emitStatus(cfg.uploadDurationMs);
+    return;
+  }
 
   uint32_t now = millis();
+
+  // Heartbeat for IDLE / READY states so the display stays current
+  if (state != UPLOADING && now - lastStatus >= 1000) emitStatus();
 
   // ── IDLE: show score, wait for a card ─────────────────────────────────────
   if (state == IDLE) {
@@ -327,6 +346,7 @@ void loop() {
     tone(BUZZER_PIN, 1047, 120);
     lastCheck = now;
     state = CARD_PRESENT;
+    emitStatus();
     return;
   }
 
@@ -337,6 +357,7 @@ void loop() {
       flash(200, 50, 0, 2, 80);
       tone(BUZZER_PIN, 200, 200);
       toIdle();
+      emitStatus();
       return;
     }
 
@@ -349,6 +370,7 @@ void loop() {
         rfid.PCD_StopCrypto1();
         state = IDLE;
         drawScore();
+        emitStatus();
         return;
       }
     }
@@ -359,6 +381,7 @@ void loop() {
       lastFilled  = -1;
       lastBeep    = now;
       state       = UPLOADING;
+      emitStatus();
     }
     return;
   }
@@ -373,11 +396,13 @@ void loop() {
       lastFilled = -1;
       state     = CARD_PRESENT;
       drawScore();
+      emitStatus();
       return;
     }
 
     uint32_t elapsed = now - uploadStart;
     drawUploadProgress(elapsed);
+    if (now - lastStatus >= 100) emitStatus(elapsed);
 
     // Beep rate increases in the final quarter
     uint32_t interval = (elapsed > cfg.uploadDurationMs * 3 / 4) ? 250 :
@@ -396,6 +421,7 @@ void loop() {
         rfid.PCD_StopCrypto1();
         state = IDLE;
         drawScore();
+        emitStatus();
         return;
       }
     }
@@ -413,6 +439,7 @@ void loop() {
       tone(BUZZER_PIN, 200, 400);
       state = IDLE;
       drawScore();
+      emitStatus();
       return;
     }
 
@@ -426,6 +453,7 @@ void loop() {
     if (score >= cfg.winScore) {
       Serial.println("\n  *** ATTACKERS WIN! ***\n");
       gameOver = true;
+      emitStatus(cfg.uploadDurationMs);
       allPixels(0, 180, 255);
       delay(300);
       winAnimation();
@@ -439,5 +467,6 @@ void loop() {
       drawScore();             delay(100);
     }
     state = IDLE;
+    emitStatus();
   }
 }
