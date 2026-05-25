@@ -111,6 +111,29 @@ _ALERT_NOISE = [
     "[ERR] LAST PACKET — INTERCEPTION FAILED",
 ]
 
+_VIRUS_NOISE = [
+    "[VIRUS] CORRUPTING SECTOR {n:04d}...",
+    "[VIRUS] PAYLOAD INJECTED — {n:04d} BYTES",
+    "[VIRUS] OVERWRITING MBR...",
+    "[VIRUS] FIREWALL DISABLED",
+    "[VIRUS] ROOT ACCESS GRANTED",
+    "[VIRUS] ENCRYPTING FILES... {n:03d}%",
+    "[VIRUS] C&C BEACON: 10.{x:d}.{y:d}.1",
+    "[VIRUS] DELETING LOGS...",
+    "[VIRUS] EXFILTRATING DATA: {r:d} KB/s",
+    "[VIRUS] KERNEL PANIC IMMINENT",
+    "[VIRUS] SSH BACKDOOR INSTALLED",
+    "[VIRUS] WIPING PARTITION {n:01d}...",
+    "[VIRUS] DNS POISONED: 0x{a:04X}",
+    "[VIRUS] PROCESS INJECTED PID:{n:04d}",
+    "[VIRUS] MEMORY CORRUPTION 0x{a:04X}",
+    "X_X CRITICAL SYSTEM FAILURE X_X",
+    "[ ALL SYSTEMS COMPROMISED ]",
+    "[VIRUS] SPREADING... NODE {n:02d} INFECTED",
+    "[VIRUS] BACKUP DESTROYED",
+    "[VIRUS] RANSOMWARE DEPLOYED",
+]
+
 def _rand_noise(alert=False):
     pool = _ALERT_NOISE if alert and random.random() < 0.65 else _NOISE
     tmpl = random.choice(pool)
@@ -133,7 +156,18 @@ def _rand_noise(alert=False):
 # ── Threads ───────────────────────────────────────────────────────────────────
 def noise_thread():
     while True:
-        gs    = get_gs()
+        gs = get_gs()
+        if gs["state"] == "VIRUS":
+            time.sleep(random.uniform(0.01, 0.04))
+            tmpl = random.choice(_VIRUS_NOISE)
+            try:
+                msg = tmpl.format(n=random.randint(0, 9999), x=random.randint(1, 254),
+                                  y=random.randint(1, 254), r=random.randint(10, 980),
+                                  a=random.randint(0, 0xFFFF))
+            except Exception:
+                msg = tmpl
+            tpush(msg)
+            continue
         alert = gs["state"] == "UPLOADING" and gs["score"] >= gs["winscore"] - 1 and gs["winscore"] > 1
         if alert:
             delay = random.uniform(0.015, 0.055)
@@ -181,6 +215,18 @@ def demo_thread():
         sc += 1; tpush(f"DEMO: packet uploaded! ({sc}/{ws})")
         set_gs("IDLE", 0, dur, sc, ws)
         time.sleep(INTEL_DUR + 2.0)  # let players read the intel before next cycle
+        # Demo virus card every 2nd packet
+        if sc % 2 == 0 and sc < ws:
+            tpush("DEMO: !! VIRUS CARD DETECTED !!")
+            v_ms = int(VIRUS_DUR * 1000)
+            t0v  = time.time()
+            while True:
+                el = int((time.time() - t0v) * 1000)
+                if el >= v_ms: break
+                set_gs("VIRUS", el, v_ms, sc, ws); time.sleep(0.04)
+            set_gs("IDLE", 0, dur, sc, ws)
+            tpush("DEMO: lockout cleared — resuming operations")
+            time.sleep(1.5)
         if sc >= ws:
             set_gs("GAMEOVER", dur, dur, sc, ws); tpush("DEMO: *** ATTACKERS WIN ***")
             time.sleep(6); sc = 0
@@ -265,7 +311,8 @@ def boot_sequence(screen, f_term, f_state, present_fn=None):
         present_fn(); clock.tick(40)
 
 # ── SCP Intel data ────────────────────────────────────────────────────────────
-INTEL_DUR = 8.0
+INTEL_DUR  = 8.0
+VIRUS_DUR  = 15.0
 
 # Fallback data used only if intel/ folder is missing or empty
 _INTEL_FALLBACK = [
@@ -619,6 +666,143 @@ def draw_intel_overlay(screen, f_state, f_label, f_cdn, f_body, entry, timer, ma
     screen.blit(cdn_s, (_OV_X + _OV_W // 2 - cdn_s.get_width() // 2,
                         _CDN_Y2 + (_CDN_H - 6 - cdn_s.get_height()) // 2))
 
+# ── Virus frame animation ─────────────────────────────────────────────────────
+_VIRUS_FRAMES: list = []
+_VIRUS_ANIM_FPS = 4   # frames per second for the skull animation
+
+def _load_virus_frames():
+    global _VIRUS_FRAMES
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Virus")
+    frames = []
+    if os.path.isdir(base):
+        for fn in sorted(os.listdir(base)):
+            if fn.lower().endswith(".png"):
+                path = os.path.join(base, fn)
+                try:
+                    frames.append(pygame.image.load(path).convert_alpha())
+                except Exception:
+                    pass
+    _VIRUS_FRAMES = frames
+
+# ── Virus overlay ─────────────────────────────────────────────────────────────
+def _draw_skull(surf, cx, cy, r, t):
+    # Dome — green-tinted bone
+    pygame.draw.circle(surf, (18, 115, 30),  (cx, cy - int(r * 0.10)), r)
+    pygame.draw.circle(surf, (8,  55,  12),  (cx, cy - int(r * 0.10)), r, 3)
+    # Cheeks / lower face
+    jw, jh = int(r * 0.84), int(r * 0.46)
+    jy     = cy + int(r * 0.26)
+    pygame.draw.ellipse(surf, (14, 95, 22), (cx - jw // 2, jy, jw, jh))
+    # Eye sockets
+    ew, eh = int(r * 0.27), int(r * 0.26)
+    pulse  = int(90 + 90 * abs(math.sin(t * 2.8)))
+    for ex in (cx - int(r * 0.36), cx + int(r * 0.36)):
+        pygame.draw.ellipse(surf, (0, 6, 0),
+                            (ex - ew // 2, cy - int(r * 0.22), ew, eh))
+        pygame.draw.circle(surf, (0, pulse, int(pulse * 0.35)),
+                           (ex, cy - int(r * 0.10)), int(r * 0.09))
+    # Nose cavity
+    nw, nh = int(r * 0.15), int(r * 0.16)
+    pygame.draw.ellipse(surf, (0, 6, 0), (cx - nw // 2, cy + int(r * 0.08), nw, nh))
+    # Jaw
+    pygame.draw.ellipse(surf, (12, 82, 20),
+                        (cx - jw // 2, cy + int(r * 0.30), jw, int(r * 0.40)))
+    # Teeth — slightly green-tinted ivory
+    tw = max(4, int(jw // 7))
+    for i in range(6):
+        tx = cx - int(jw * 0.38) + i * int(jw * 0.14)
+        pygame.draw.rect(surf, (185, 218, 188),
+                         (tx, cy + int(r * 0.38), tw - 3, int(r * 0.22)))
+    # Cracks
+    pts1 = [(cx + int(r*0.10), cy - r),
+            (cx + int(r*0.26), cy - int(r*0.52)),
+            (cx + int(r*0.16), cy + int(r*0.10))]
+    pts2 = [(cx - int(r*0.18), cy - int(r*0.66)),
+            (cx - int(r*0.33), cy - int(r*0.30)),
+            (cx - int(r*0.22), cy)]
+    pygame.draw.lines(surf, (6, 58, 12), False, pts1, 2)
+    pygame.draw.lines(surf, (6, 58, 12), False, pts2, 2)
+
+
+def _draw_biohazard(surf, cx, cy, r, t):
+    pulse  = int(140 + 95 * abs(math.sin(t * 1.8)))
+    col    = (0, pulse, int(pulse * 0.30))
+    lobe_r = int(r * 0.42)
+    thick  = max(2, int(r * 0.14))
+    for i in range(3):
+        angle = -math.pi / 2 + i * (2 * math.pi / 3)
+        lx = cx + int(math.cos(angle) * r * 0.46)
+        ly = cy + int(math.sin(angle) * r * 0.46)
+        pygame.draw.circle(surf, col, (lx, ly), lobe_r, thick)
+    pygame.draw.circle(surf, col, (cx, cy), int(r * 0.22))
+    pygame.draw.circle(surf, (0, 0, 0), (cx, cy), int(r * 0.12))
+    pygame.draw.circle(surf, col, (cx, cy), r, max(2, int(r * 0.10)))
+
+
+def draw_virus_overlay(screen, f_huge, f_state, f_cdn, timer, max_timer, t, blink):
+    # Full blackout with green tint
+    ov = pygame.Surface((W, H), pygame.SRCALPHA)
+    ov.fill((0, 0, 0, 235))
+    screen.blit(ov, (0, 0))
+    tint = pygame.Surface((W, H), pygame.SRCALPHA)
+    tint.fill((0, 22, 4, 60))
+    screen.blit(tint, (0, 0))
+
+    # Horizontal glitch bands — green
+    for _ in range(20):
+        gy   = random.randint(0, H - 1)
+        gw2  = random.randint(W // 5, W)
+        gx2  = random.randint(0, W - gw2)
+        v    = random.randint(20, 65)
+        pygame.draw.rect(screen, (0, v + 20, int(v * 0.25)),
+                         (gx2, gy, gw2, random.randint(1, 4)))
+
+    # Corner biohazard symbols
+    for bx2, by2 in [(105, 95), (W - 105, 95), (105, H - 95), (W - 105, H - 95)]:
+        _draw_biohazard(screen, bx2, by2, 55, t)
+
+    # Central skull — image sequence if available, procedural fallback
+    if _VIRUS_FRAMES:
+        frame = _VIRUS_FRAMES[int(t * _VIRUS_ANIM_FPS) % len(_VIRUS_FRAMES)]
+        fw, fh = frame.get_width(), frame.get_height()
+        max_w, max_h = 520, 460   # keep clear of title and countdown bar
+        scale_f = min(max_w / fw, max_h / fh, 1.0)
+        if scale_f < 1.0:
+            fw2 = int(fw * scale_f); fh2 = int(fh * scale_f)
+            frame = pygame.transform.smoothscale(frame, (fw2, fh2))
+            fw, fh = fw2, fh2
+        screen.blit(frame, (W // 2 - fw // 2, H // 2 - fh // 2 - 10))
+    else:
+        _draw_skull(screen, W // 2, H // 2 - 20, 160, t)
+
+    # Title — red
+    title_col = (220, 20, 8) if blink else (155, 4, 2)
+    ts = f_huge.render("SYSTEM COMPROMISED", True, title_col)
+    screen.blit(ts, (W // 2 - ts.get_width() // 2, 22))
+
+    # Subtitle
+    sub_col = (0, 210, 55) if blink else (0, 110, 28)
+    ss = f_state.render("!! VIRUS DETECTED — TERMINAL LOCKED !!", True, sub_col)
+    screen.blit(ss, (W // 2 - ss.get_width() // 2, 118))
+
+    # Countdown bar — green
+    bar_pad = 60
+    bar_y2  = H - 82
+    frac_c  = timer / max(max_timer, 1)
+    bw_px   = int((W - bar_pad * 2) * frac_c)
+    pygame.draw.rect(screen, (38, 0, 0),   (bar_pad, bar_y2, W - bar_pad * 2, 30))
+    pygame.draw.rect(screen, (200, 0, 0),  (bar_pad, bar_y2, bw_px, 30))
+    cdn_s = f_cdn.render(
+        f"LOCKOUT EXPIRES IN {timer:.1f}s  //  ALL OPERATIONS SUSPENDED",
+        True, (210, 150, 150))
+    screen.blit(cdn_s, (W // 2 - cdn_s.get_width() // 2, bar_y2 + 5))
+
+    # Pulsing green border
+    pulse_b = int(80 + 80 * abs(math.sin(t * 6.0)))
+    pygame.draw.rect(screen, (0, min(255, 120 + pulse_b), int(pulse_b * 0.25)),
+                     (0, 0, W, H), 7)
+
+
 # ── Particle system ───────────────────────────────────────────────────────────
 _particles = []
 
@@ -906,6 +1090,8 @@ def main():
     f_foot       = pygame.font.SysFont("monospace", 12)
     f_intel_body = pygame.font.SysFont("monospace", 21, bold=True)
 
+    _load_virus_frames()
+
     boot_sequence(screen, f_term, f_state, present_fn=present)
 
     if DEMO_MODE:
@@ -1067,6 +1253,8 @@ def main():
                 "UPLOADING": ("UPLOADING DATA ...",              CYAN),
                 "GAMEOVER":  ("* * *  A T T A C K E R S  W I N  * * *",
                               GREEN if blink else YELLOW),
+                "VIRUS":     ("!! TERMINAL LOCKED — VIRUS DETECTED !!",
+                              RED if blink else (90, 0, 0)),
             }
             s_label, s_col = scfg.get(gs["state"], ("UNKNOWN STATE", GREY))
         blit_c(screen, f_state.render(s_label, True, s_col), W // 2, STATUS_Y + 6)
@@ -1118,7 +1306,9 @@ def main():
         for i, ln in enumerate(lines[start:]):
             age    = len(lines) - (start + i) - 1
             bright = max(55, 185 - age * 7)
-            if "[ERR]" in ln:
+            if "[VIRUS]" in ln or "COMPROMISED" in ln or "FAILURE" in ln:
+                t_col = (0, min(255, bright + 30), int(bright * 0.25))
+            elif "[ERR]" in ln:
                 t_col = (210, int(bright * 0.3), 0)
             elif "[WARN]" in ln:
                 t_col = (170, int(bright * 0.7), 0)
@@ -1141,10 +1331,16 @@ def main():
         draw_alert_border(screen, now_t, alert)
         draw_footer(screen, f_foot, start_time, now_t, cpu, mem, temp)
 
-        # Intel overlay — drawn last, on top of everything
+        # Intel overlay
         if intel_show and intel_entry is not None:
             draw_intel_overlay(screen, f_state, f_label, f_cdn, f_intel_body,
                                intel_entry, intel_timer, INTEL_DUR, now_t, blink)
+
+        # Virus overlay — drawn on top of everything
+        if gs["state"] == "VIRUS":
+            remaining = max(0.0, (gs["duration"] - gs["elapsed"]) / 1000.0)
+            draw_virus_overlay(screen, f_huge, f_state, f_cdn,
+                               remaining, gs["duration"] / 1000.0, now_t, blink)
 
         present()
         clock.tick(fps)

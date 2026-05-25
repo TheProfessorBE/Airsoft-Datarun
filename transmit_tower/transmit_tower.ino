@@ -44,6 +44,9 @@
 static const uint8_t CHARGED_TAG[16] = {
   'D','A','T','A','R','U','N',':','C','H','A','R','G','E','D',0
 };
+static const uint8_t VIRUS_TAG[16] = {
+  'V','I','R','U','S',' ','V','I','R','U','S',0,0,0,0,0
+};
 static const uint8_t EMPTY[16] = {0};
 
 // ── NVS config ────────────────────────────────────────────────────────────────
@@ -52,6 +55,7 @@ Preferences prefs;
 struct Config {
   uint8_t  winScore;
   uint32_t uploadDurationMs;
+  uint32_t virusLockMs;
 };
 Config cfg;
 
@@ -59,6 +63,7 @@ void loadConfig() {
   prefs.begin("datarun_term", true);
   cfg.winScore         = prefs.getUChar("win_score",  5);
   cfg.uploadDurationMs = prefs.getUInt("upload_ms",  5000);
+  cfg.virusLockMs      = prefs.getUInt("virus_ms",  15000);
   prefs.end();
 }
 
@@ -66,12 +71,14 @@ void saveConfig() {
   prefs.begin("datarun_term", false);
   prefs.putUChar("win_score",  cfg.winScore);
   prefs.putUInt("upload_ms",   cfg.uploadDurationMs);
+  prefs.putUInt("virus_ms",    cfg.virusLockMs);
   prefs.end();
 }
 
 void resetConfig() {
   cfg.winScore         = 5;
   cfg.uploadDurationMs = 5000;
+  cfg.virusLockMs      = 15000;
 }
 
 // ── Serial helpers ────────────────────────────────────────────────────────────
@@ -108,6 +115,7 @@ void printConfig() {
   Serial.println("  Current configuration:");
   Serial.printf( "    Win score:        %u\n", cfg.winScore);
   Serial.printf( "    Upload duration:  %u ms\n", cfg.uploadDurationMs);
+  Serial.printf( "    Virus lock:       %u ms\n", cfg.virusLockMs);
   Serial.println();
 }
 
@@ -119,6 +127,7 @@ void configMenu() {
     printConfig();
     Serial.println("  [1]  Set win score");
     Serial.println("  [2]  Set upload duration");
+    Serial.println("  [3]  Set virus lock duration");
     Serial.println("  [R]  Reset to defaults");
     Serial.println("  [S]  Save and continue");
     Serial.println("  [X]  Continue without saving");
@@ -142,6 +151,13 @@ void configMenu() {
         uint32_t val = readLine().toInt();
         if (val >= 5000 && val <= 60000) cfg.uploadDurationMs = val;
         else Serial.println("  ! Invalid — enter 5000 to 60000.");
+        break;
+      }
+      case '3': {
+        Serial.print("  Virus lock duration in ms (5000-120000): ");
+        uint32_t val = readLine().toInt();
+        if (val >= 5000 && val <= 120000) cfg.virusLockMs = val;
+        else Serial.println("  ! Invalid — enter 5000 to 120000.");
         break;
       }
       case 'R': resetConfig(); Serial.println("  Defaults restored (not yet saved)."); break;
@@ -227,20 +243,23 @@ void winAnimation() {
 }
 
 // ── State machine ─────────────────────────────────────────────────────────────
-enum State { IDLE, CARD_PRESENT, UPLOADING };
-State    state       = IDLE;
-uint32_t uploadStart = 0;
-uint32_t lastCheck   = 0;
-uint32_t lastBeep    = 0;
+enum State { IDLE, CARD_PRESENT, UPLOADING, LOCKED };
+State    state           = IDLE;
+uint32_t uploadStart     = 0;
+uint32_t virusLockStart  = 0;
+uint32_t lastCheck       = 0;
+uint32_t lastBeep        = 0;
 
 // Emit structured status line for the RPi display.
 // Format: ##STATE <state> <elapsed_ms> <duration_ms> <score> <winscore>
 void emitStatus(uint32_t elapsed = 0) {
   const char* s = gameOver              ? "GAMEOVER"  :
+                  state == LOCKED       ? "VIRUS"      :
                   state == UPLOADING    ? "UPLOADING"  :
                   state == CARD_PRESENT ? "READY"      : "IDLE";
+  uint32_t dur = (state == LOCKED) ? cfg.virusLockMs : cfg.uploadDurationMs;
   Serial.printf("##STATE %s %u %u %u %u\n",
-                s, elapsed, (unsigned)cfg.uploadDurationMs,
+                s, elapsed, dur,
                 (unsigned)score, (unsigned)cfg.winScore);
   lastStatus = millis();
 }
@@ -329,6 +348,20 @@ void loop() {
       return;
     }
 
+    if (memcmp(buf, VIRUS_TAG, 16) == 0) {
+      Serial.println("!! VIRUS DETECTED — TERMINAL LOCKED !!");
+      flash(200, 0, 0, 5, 80);
+      tone(BUZZER_PIN, 220, 200); delay(220);
+      tone(BUZZER_PIN, 180, 400);
+      rfid.PICC_HaltA();
+      rfid.PCD_StopCrypto1();
+      virusLockStart = now;
+      lastBeep       = now;
+      state          = LOCKED;
+      emitStatus(0);
+      return;
+    }
+
     if (memcmp(buf, CHARGED_TAG, 16) != 0) {
       Serial.println("Card not charged.");
       flash(220, 80, 0, 4, 100);
@@ -381,6 +414,29 @@ void loop() {
       lastFilled  = -1;
       lastBeep    = now;
       state       = UPLOADING;
+      emitStatus();
+    }
+    return;
+  }
+
+  // ── LOCKED: virus lockout — all inputs disabled ───────────────────────────
+  if (state == LOCKED) {
+    uint32_t elapsed = now - virusLockStart;
+    // Pulsing red LEDs
+    uint8_t rv = (uint8_t)(80 + 80 * fabsf(sinf(elapsed / 350.0f)));
+    allPixels(rv, 0, 0);
+    // Two-tone alarm beep
+    if (now - lastBeep >= 600) {
+      lastBeep = now;
+      tone(BUZZER_PIN, 440, 70); delay(90);
+      tone(BUZZER_PIN, 320, 70);
+    }
+    if (now - lastStatus >= 100) emitStatus(elapsed);
+    if (elapsed >= cfg.virusLockMs) {
+      Serial.println("Lockout expired — system restored.");
+      state = IDLE;
+      allPixels(0, 0, 0); delay(200);
+      drawScore();
       emitStatus();
     }
     return;
